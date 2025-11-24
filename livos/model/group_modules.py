@@ -33,8 +33,10 @@ def downsample_groups(g: torch.Tensor,
 class GConv2d(nn.Conv2d):
     def forward(self, g: torch.Tensor) -> torch.Tensor:
         batch_size, num_objects = g.shape[:2]
-        g = super().forward(g.flatten(start_dim=0, end_dim=1))
-        return g.view(batch_size, num_objects, *g.shape[1:])
+        g = torch.nn.functional.conv2d(g.flatten(start_dim=0, end_dim=1),
+            self.weight, self.bias, stride=self.stride, padding=self.padding,
+            dilation=self.dilation, groups=self.groups)
+        return g.view(batch_size, num_objects, g.shape[1], g.shape[2], g.shape[3])
 
 
 class GroupResBlock(nn.Module):

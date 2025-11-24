@@ -1,6 +1,6 @@
 # Modified from PyTorch nn.Transformer
 
-from typing import List, Callable, Tuple
+from typing import List, Callable, Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -29,8 +29,8 @@ class SelfAttention(nn.Module):
         self,
         x: torch.Tensor,
         pe: torch.Tensor,
-        attn_mask: bool = None,
-        key_padding_mask: bool = None
+        attn_mask: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         x = self.norm(x)
         if any(self.add_pe_to_qkv):
@@ -78,10 +78,9 @@ class CrossAttention(nn.Module):
         mem: torch.Tensor,
         x_pe: torch.Tensor,
         mem_pe: torch.Tensor,
-        attn_mask: bool = None,
-        *,
+        attn_mask: Optional[torch.Tensor] = None,
         need_weights: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         x = self.norm(x)
         if self.add_pe_to_qkv[0]:
             q = x + x_pe

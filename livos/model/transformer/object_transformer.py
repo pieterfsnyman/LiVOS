@@ -41,7 +41,7 @@ class QueryTransformerBlock(nn.Module):
         pixel_pe: torch.Tensor,
         attn_mask: torch.Tensor,
         need_weights: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         # x: (bs*num_objects)*num_queries*embed_dim
         # pixel: bs*num_objects*C*H*W
         # query_pe: (bs*num_objects)*num_queries*embed_dim
@@ -61,7 +61,7 @@ class QueryTransformerBlock(nn.Module):
             pixel_flat, x, pixel_pe, query_pe, need_weights=need_weights)
         pixel = self.pixel_ffn(pixel, pixel_flat)
 
-        if need_weights:
+        if q_weights is not None and p_weights is not None:
             bs, num_objects, _, h, w = pixel.shape
             q_weights = q_weights.view(
                 bs, num_objects, self.num_heads, self.num_queries, h, w)
@@ -125,7 +125,7 @@ class QueryTransformer(nn.Module):
         object_memory_BNQC: torch.Tensor,
         selector: Optional[torch.Tensor] = None,
         need_weights: bool = False
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, Tuple[Dict[str, List[torch.Tensor]], Dict[str, Optional[torch.Tensor]]]]:
         # pixel: B*num_objects*embed_dim*H*W
         # obj_summaries: B*num_objects*T*num_queries*embed_dim
         Q = self.num_queries
@@ -157,34 +157,37 @@ class QueryTransformer(nn.Module):
         pixel = pixel_init_BNCHW
 
         # run the transformer
-        aux_features = {'q_logits': []}
+        aux_features1 = {'q_logits': []}
+        aux_features2: Dict[str, Optional[torch.Tensor]] = {}
 
         # first aux output
         aux_logits = self.mask_pred[0](pixel).squeeze(2)
         attn_mask = self._get_aux_mask(aux_logits, selector)
-        aux_features['q_logits'].append(aux_logits)
-        for i in range(self.num_blocks):
-            query_DQC, pixel, q_weights, p_weights = self.blocks[i](
+        aux_features1['q_logits'].append(aux_logits)
+        for i, block in enumerate(self.blocks):
+            query_DQC, pixel, q_weights, p_weights = block(
                 query_DQC, pixel, query_emb_DQC, pixel_pe_DLC, attn_mask, 
                 need_weights=need_weights)
 
             if self.training or i <= self.num_blocks - 1 or need_weights:
-                aux_logits = self.mask_pred[i + 1](pixel).squeeze(2)
+                for j, mask_pred in enumerate(self.mask_pred):
+                    if j == i + 1:
+                        aux_logits = mask_pred(pixel).squeeze(2)
                 attn_mask = self._get_aux_mask(aux_logits, selector)
-                aux_features['q_logits'].append(aux_logits)
+                aux_features1['q_logits'].append(aux_logits)
 
-        aux_features['q_weights'] = q_weights  # last layer only
-        aux_features['p_weights'] = p_weights  # last layer only
+        aux_features2['q_weights'] = q_weights  # last layer only
+        aux_features2['p_weights'] = p_weights  # last layer only
 
         if self.training:
             # no need to save all heads
-            aux_features['attn_mask'] = attn_mask.view(
+            aux_features2['attn_mask'] = attn_mask.view(
                 B, N, self.num_heads, self.num_queries, H, W)[:, :, 0]
 
-        return pixel, aux_features
+        return pixel, (aux_features1, aux_features2)
 
     def _get_aux_mask(
-        self, logits: torch.Tensor, selector: torch.Tensor) -> torch.Tensor:
+        self, logits: torch.Tensor, selector: Optional[torch.Tensor]) -> torch.Tensor:
         # logits: batch_size*num_objects*H*W
         # selector: batch_size*num_objects*1*1
         # returns a mask of shape (batch_size*num_objects*num_heads)*num_queries*(H*W)
@@ -197,7 +200,7 @@ class QueryTransformer(nn.Module):
         logits = aggregate(prob, dim=1)
 
         is_foreground = (logits[:, 1:] >= logits.max(dim=1, keepdim=True)[0])
-        foreground_mask = is_foreground.bool().flatten(start_dim=2)
+        foreground_mask = is_foreground.to(torch.bool).flatten(start_dim=2)
         inv_foreground_mask = ~foreground_mask
         inv_background_mask = foreground_mask
 
@@ -208,6 +211,6 @@ class QueryTransformer(nn.Module):
 
         aux_mask = torch.cat([aux_foreground_mask, aux_background_mask], dim=1)
 
-        aux_mask[torch.where(aux_mask.sum(-1) == aux_mask.shape[-1])] = False
+        aux_mask[aux_mask.sum(-1) == aux_mask.shape[-1]] = False
 
         return aux_mask

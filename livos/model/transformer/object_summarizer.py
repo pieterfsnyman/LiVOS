@@ -65,7 +65,7 @@ class ObjectSummarizer(nn.Module):
         self,
         masks_BNHW: torch.Tensor,
         value_BNCHW: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> torch.Tensor:
         # masks: B*num_objects*(H0)*(W0)
         # value: B*num_objects*value_dim*H*W
         # -> B*num_objects*H*W*value_dim

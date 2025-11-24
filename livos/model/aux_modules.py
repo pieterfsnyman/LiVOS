@@ -3,7 +3,7 @@ For computing auxiliary outputs for auxiliary losses
 """
 import torch
 import torch.nn as nn
-from typing import Dict
+from typing import Dict, List, Optional, Tuple
 
 from livos.model.group_modules import GConv2d
 from livos.utils.tensor_utils import aggregate
@@ -55,18 +55,17 @@ class AuxComputer(nn.Module):
         self, 
         pixfeat: torch.Tensor,
         sensory: torch.Tensor,
-        aux: Dict[str, torch.Tensor],
-        *,
+        aux: Tuple[Dict[str, List[torch.Tensor]], Dict[str, Optional[torch.Tensor]]],
         selector: torch.Tensor = None
-    ) -> Dict[str, torch.Tensor]:
-        aux_output = {}
-        aux_output['attn_mask'] = aux['attn_mask']
+    ) -> Dict[str, Optional[torch.Tensor]]:
+        aux_output: Dict[str, Optional[torch.Tensor]] = {}
+        aux_output['attn_mask'] = aux[1]['attn_mask']
 
         # B*num_objects*H*W
         logits = self.sensory_aux(pixfeat, sensory)
         aux_output['sensory_logits'] = self.aggregate_with_selector(logits, selector)
 
-        q_logits = aux['q_logits']
+        q_logits = aux[0]['q_logits']
         # B*num_objects*num_levels*H*W
         aux_output['q_logits'] = self.aggregate_with_selector(
             torch.stack(q_logits, dim=2),

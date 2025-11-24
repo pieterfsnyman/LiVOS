@@ -36,7 +36,7 @@ class PositionalEncoding(nn.Module):
         self.channel_last = channel_last
         self.transpose_output = transpose_output
 
-        self.cached_penc = None  # the cache is irrespective of the number of objects
+        self.cached_penc = torch.empty(0)  # the cache is irrespective of the number of objects
 
     def forward(self, tensor: torch.Tensor) -> torch.Tensor:
         """
@@ -61,13 +61,13 @@ class PositionalEncoding(nn.Module):
         else:
             batch_size, c, h, w = tensor.shape
 
-        if self.cached_penc is not None and self.cached_penc.shape == tensor.shape:
+        if self.cached_penc.numel() != 0 and self.cached_penc.shape == tensor.shape:
             if num_objects is None:
                 return self.cached_penc
             else:
                 return self.cached_penc.unsqueeze(1)
 
-        self.cached_penc = None
+        self.cached_penc = torch.empty(0)
 
         pos_y = torch.arange(h, device=tensor.device, dtype=self.inv_freq.dtype)
         pos_x = torch.arange(w, device=tensor.device, dtype=self.inv_freq.dtype)

@@ -108,7 +108,7 @@ class FeatureFuser(nn.Module):
         # Add x and y
         fused_DCHW = x_DCHW + y_DCHW
         fused_DCHW = self.layer2(self.layer1(fused_DCHW))
-        fused_BNCHW = fused_DCHW.view(B, N, *fused_DCHW.shape[1:])
+        fused_BNCHW = fused_DCHW.view(B, N, fused_DCHW.shape[1], fused_DCHW.shape[2], fused_DCHW.shape[3])
 
         return fused_BNCHW
 
@@ -128,7 +128,6 @@ class PixelFuser(nn.Module):
         sensory_BNCHW: torch.Tensor,
         masks_BNHW: torch.Tensor,
         masks_others_BNHW: torch.Tensor,
-        *,
         chunk_size: int=-1,
     ) -> torch.Tensor:      
         N = masks_BNHW.shape[1]        
@@ -147,7 +146,7 @@ class PixelFuser(nn.Module):
             sensory_chunk_DCHW = sensory_chunk_BNCHW.flatten(start_dim=0, end_dim=1)
             sensory_chunk_DCHW = self.conv(sensory_chunk_DCHW)
             sensory_chunk_BNCHW = \
-                sensory_chunk_DCHW.view(B, M, *sensory_chunk_DCHW.shape[1:])
+                sensory_chunk_DCHW.view(B, M, sensory_chunk_DCHW.shape[1], sensory_chunk_DCHW.shape[2], sensory_chunk_DCHW.shape[3])
 
             X_BNCHW = readout_BNCHW[:, i:i + chunk_size] + sensory_chunk_BNCHW
             X_BNCHW = self.fuser(pixfeat_BCHW, X_BNCHW)
@@ -195,11 +194,15 @@ class MultiscaleSensoryUpdater(nn.Module):
     ) -> torch.Tensor:
         """
         """
-        output_BCHW = F.interpolate(
-            input_BCHW, scale_factor=ratio, mode=mode, align_corners=align_corners)
+        if mode != 'area':
+            output_BCHW = F.interpolate(
+                input_BCHW, scale_factor=ratio, mode=mode, align_corners=align_corners)
+        else:
+            output_BCHW = F.interpolate(
+                input_BCHW, scale_factor=ratio, mode=mode)
         return output_BCHW
 
-    def forward(self, g: torch.Tensor, h_BNCHW: torch.Tensor) -> torch.Tensor:
+    def forward(self, g: List[torch.Tensor], h_BNCHW: torch.Tensor) -> torch.Tensor:
         """
         Args:
             g: multiscale features
@@ -218,7 +221,7 @@ class MultiscaleSensoryUpdater(nn.Module):
 
         h_DCHW = h_BNCHW.flatten(start_dim=0, end_dim=1)
         values_DCHW = self.transform(torch.cat([g_DCHW, h_DCHW], dim=1))
-        values_BNCHW = values_DCHW.view(B, N, *values_DCHW.shape[1:])
+        values_BNCHW = values_DCHW.view(B, N, values_DCHW.shape[1], values_DCHW.shape[2], values_DCHW.shape[3])
         new_h_BNCHW = recurrent_update(h_BNCHW.clone(), values_BNCHW)
 
         return new_h_BNCHW
@@ -250,7 +253,7 @@ class SensoryUpdater(nn.Module):
         gh_BNCHW = torch.cat([g_BNCHW, h_BNCHW], dim=2)
         gh_DCHW = gh_BNCHW.flatten(start_dim=0, end_dim=1)
         values_DCHW = self.transform(gh_DCHW)
-        values_BNCHW = values_DCHW.view(B, N, *values_DCHW.shape[1:])
+        values_BNCHW = values_DCHW.view(B, N, values_DCHW.shape[1], values_DCHW.shape[2], values_DCHW.shape[3])
         new_h_BNCHW = recurrent_update(h_BNCHW.clone(), values_BNCHW)
 
         return new_h_BNCHW
@@ -326,11 +329,12 @@ class MaskEncoder(nn.Module):
         pixfeat_BCHW: torch.Tensor,
         masks_BN2HW: torch.Tensor,
         sensory_BNCHW: torch.Tensor,
-        *,
         deep_update: bool = False,
-        chunk_size=-1
-    ) -> torch.Tensor:
-        B, N, K = masks_BN2HW.shape[:3]
+        chunk_size: int=-1
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        B = int(masks_BN2HW.shape[0])
+        N = int(masks_BN2HW.shape[1])
+        K = int(masks_BN2HW.shape[2])
         assert K == 2
 
         image_BN3HW = image_BCHW.unsqueeze(1).expand(-1, N, -1, -1, -1) # C = 3
@@ -349,7 +353,7 @@ class MaskEncoder(nn.Module):
             X_DCHW = self.layer1(X_DCHW) # 1/4
             X_DCHW = self.layer2(X_DCHW) # 1/8
             X_DCHW = self.layer3(X_DCHW) # 1/16
-            X_BMCHW = X_DCHW.view(B, X_BM5HW.shape[1], *X_DCHW.shape[1:])
+            X_BMCHW = X_DCHW.view(B, X_BM5HW.shape[1], X_DCHW.shape[1], X_DCHW.shape[2], X_DCHW.shape[3])
             X_BMCHW = self.fuser(pixfeat_BCHW, X_BMCHW)
             X_chunks.append(X_BMCHW)
 
@@ -364,7 +368,7 @@ class MaskEncoder(nn.Module):
 
 
 class MaskUpsampleBlock(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, scale_factor: int = 2):
+    def __init__(self, in_dim: int, out_dim: int, scale_factor: float = 2.0):
         super().__init__()
         self.conv1 = nn.Conv2d(in_dim, out_dim, kernel_size=3, padding=1)
         self.act1 = nn.GELU()
@@ -385,7 +389,7 @@ class MaskUpsampleBlock(nn.Module):
         feat = F.interpolate(
             feat.flatten(start_dim=0, end_dim=1), 
             scale_factor=ratio, mode=mode, align_corners=align_corners)
-        feat = feat.view(B, N, *feat.shape[1:])
+        feat = feat.view(B, N, feat.shape[1], feat.shape[2], feat.shape[3])
         return feat
 
     def forward(self, feat: torch.Tensor, skip_feat: torch.Tensor) -> torch.Tensor:
@@ -402,7 +406,7 @@ class MaskUpsampleBlock(nn.Module):
         feat_DCHW = feat_BNCHW.flatten(start_dim=0, end_dim=1)
         feat_DCHW = self.linear_proj(feat_DCHW) + \
             self.act2(self.conv2(self.act1(self.conv1(feat_DCHW))))
-        feat_BNCHW = feat_DCHW.view(B, N, *feat_DCHW.shape[1:])
+        feat_BNCHW = feat_DCHW.view(B, N, feat_DCHW.shape[1], feat_DCHW.shape[2], feat_DCHW.shape[3])
 
         return feat_BNCHW
 
@@ -421,10 +425,9 @@ class MaskDecoder(nn.Module):
 
     def forward(
         self, 
-        ms_feats: Iterable[torch.Tensor],
+        ms_feats: List[torch.Tensor],
         readout_BNCHW: torch.Tensor,
         sensory_BNCHW: torch.Tensor,
-        *,
         update_sensory: bool=False,
         chunk_size: int = -1
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -448,7 +451,7 @@ class MaskDecoder(nn.Module):
             v4_chunk_DCHW = v4_chunk_BMCHW.flatten(start_dim=0, end_dim=1)
             logits_chunk_D1HW = self.pred(v4_chunk_DCHW) # TODO: Add F.relu()
             logits_chunk_BMHW = \
-                logits_chunk_D1HW.view(B, M, *logits_chunk_D1HW.shape[-2:])
+                logits_chunk_D1HW.view(B, M, logits_chunk_D1HW.shape[2], logits_chunk_D1HW.shape[3])
 
             if update_sensory:
                 logits_chunk_BM1HW = logits_chunk_BMHW.unsqueeze(2)
@@ -521,7 +524,7 @@ class LIVOS(nn.Module):
 
     def encode_image(
         self, image: torch.Tensor
-    ) -> Tuple[Iterable[torch.Tensor], torch.Tensor]:
+    ) -> List[torch.Tensor]:
         
         image = (image - self.pixel_mean) / self.pixel_std
         multiscale_feats = self.image_encoder(image)
@@ -533,7 +536,6 @@ class LIVOS(nn.Module):
         pixfeat_BCHW: torch.Tensor, 
         mask_BNHW: torch.Tensor,
         sensory_BNCHW: torch.Tensor,
-        *,
         deep_update: bool=False,
         chunk_size: int=-1,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -575,17 +577,16 @@ class LIVOS(nn.Module):
 
     def segment(
         self, 
-        ms_feats: Tuple[torch.Tensor], 
+        ms_feats: List[torch.Tensor], 
         readout_BNCHW: torch.Tensor, 
         pixfeat_BCHW: torch.Tensor,
         last_masks_BNHW: torch.Tensor,
         sensory_BNCHW: torch.Tensor,
         object_memory_BNQC: torch.Tensor,
-        *,
         selector: Optional[torch.Tensor] = None,
         update_sensory: bool=False,
         chunk_size: int = -1,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Tuple[Dict[str, List[torch.Tensor]], Dict[str, Optional[torch.Tensor]]]]:
         """
         Args:
             ms_feats: multi-scale features extracted from image
@@ -609,118 +610,118 @@ class LIVOS(nn.Module):
         # Softmax over all objects
         logits = aggregate(masks, dim=1)
         logits = F.interpolate(
-            logits, scale_factor=4, mode='bilinear', align_corners=False)
+            logits, scale_factor=4.0, mode='bilinear', align_corners=False)
         masks = F.softmax(logits, dim=1)
 
         return logits, masks, sensory_BNCHW, aux_features
 
-    def forward(self, data: Dict):
-        """
-        Args:
-            H, W: image spatial dimensions.                        
-        """
-        out = {}
-        num_objects = [num.item() for num in data['info']['num_objects']]
-        out['num_objects'] = num_objects
+    # def forward(self, data: Dict):
+    #     """
+    #     Args:
+    #         H, W: image spatial dimensions.                        
+    #     """
+    #     out = {}
+    #     num_objects = [num.item() for num in data['info']['num_objects']]
+    #     out['num_objects'] = num_objects
 
-        max_num_objects = max(num_objects) # actual max num of objects
+    #     max_num_objects = max(num_objects) # actual max num of objects
 
-        images_BTCHW = data['rgb']
-        B, T = images_BTCHW.shape[:2]
-        images_DCHW = images_BTCHW.view(B*T, *images_BTCHW.shape[2:])
+    #     images_BTCHW = data['rgb']
+    #     B, T = images_BTCHW.shape[:2]
+    #     images_DCHW = images_BTCHW.view(B*T, *images_BTCHW.shape[2:])
 
-        ms_feats = self.encode_image(images_DCHW) # list of tensors with shape D,C,H,W
-        feat_DCHW = ms_feats[0]
-        pixfeat_DCHW = self.pix_projector(feat_DCHW)
-        pixfeat_BTCHW = pixfeat_DCHW.view(B, T, *pixfeat_DCHW.shape[1:]) # 1/16
+    #     ms_feats = self.encode_image(images_DCHW) # list of tensors with shape D,C,H,W
+    #     feat_DCHW = ms_feats[0]
+    #     pixfeat_DCHW = self.pix_projector(feat_DCHW)
+    #     pixfeat_BTCHW = pixfeat_DCHW.view(B, T, *pixfeat_DCHW.shape[1:]) # 1/16
 
-        key_DCHW = self.key_projector(feat_DCHW)
-        key_BTCHW = key_DCHW.view(B, T, *key_DCHW.shape[1:]) # 1/16
+    #     key_DCHW = self.key_projector(feat_DCHW)
+    #     key_BTCHW = key_DCHW.view(B, T, *key_DCHW.shape[1:]) # 1/16
 
-        gate_DC = self.gate_projector(feat_DCHW)
-        gate_BTC = gate_DC.view(B, T, *gate_DC.shape[1:])
+    #     gate_DC = self.gate_projector(feat_DCHW)
+    #     gate_BTC = gate_DC.view(B, T, *gate_DC.shape[1:])
 
-        first_frame_image_BCHW = images_BTCHW[:, 0]
-        first_frame_pixfeat_BCHW = pixfeat_BTCHW[:, 0]
+    #     first_frame_image_BCHW = images_BTCHW[:, 0]
+    #     first_frame_pixfeat_BCHW = pixfeat_BTCHW[:, 0]
 
-        first_frame_mask_B1MHW = data['first_frame_gt']
-        first_frame_mask_BNHW = first_frame_mask_B1MHW[:, 0, :max_num_objects]
+    #     first_frame_mask_B1MHW = data['first_frame_gt']
+    #     first_frame_mask_BNHW = first_frame_mask_B1MHW[:, 0, :max_num_objects]
 
-        # Initialize sensory
-        N, Cs = max_num_objects, self.sensory_dim, 
-        H, W = key_DCHW.shape[2:]
-        sensory_BNCHW = torch.zeros(B, N, Cs, H, W, device=key_DCHW.device)
+    #     # Initialize sensory
+    #     N, Cs = max_num_objects, self.sensory_dim, 
+    #     H, W = key_DCHW.shape[2:]
+    #     sensory_BNCHW = torch.zeros(B, N, Cs, H, W, device=key_DCHW.device)
 
-        # Encode mask
-        value_BNCHW, sensory_BNCHW, object_memory_BNQC = self.encode_mask(
-            first_frame_image_BCHW, first_frame_pixfeat_BCHW, 
-            first_frame_mask_BNHW, sensory_BNCHW, deep_update=True)
+    #     # Encode mask
+    #     value_BNCHW, sensory_BNCHW, object_memory_BNQC = self.encode_mask(
+    #         first_frame_image_BCHW, first_frame_pixfeat_BCHW, 
+    #         first_frame_mask_BNHW, sensory_BNCHW, deep_update=True)
 
-        # Object memory summation
-        object_memory_sum_BNQC = object_memory_BNQC
+    #     # Object memory summation
+    #     object_memory_sum_BNQC = object_memory_BNQC
 
-        # Obtain the state matrix
-        key_BCHW = key_BTCHW[:, 0]
-        key_max_B1HW = torch.max(key_BCHW, dim=1, keepdim=True).values
-        key_BCHW = (key_BCHW - key_max_B1HW).softmax(dim=1)
-        state_BNCC = torch.einsum(
-            'bkhw,bnvhw->bnkv', key_BCHW, value_BNCHW).contiguous()
+    #     # Obtain the state matrix
+    #     key_BCHW = key_BTCHW[:, 0]
+    #     key_max_B1HW = torch.max(key_BCHW, dim=1, keepdim=True).values
+    #     key_BCHW = (key_BCHW - key_max_B1HW).softmax(dim=1)
+    #     state_BNCC = torch.einsum(
+    #         'bkhw,bnvhw->bnkv', key_BCHW, value_BNCHW).contiguous()
 
-        last_masks_BNHW = first_frame_mask_BNHW
-        key_sum_BCHW = key_BCHW
-        for i in range(1, T):
-            this_key_BCHW = key_BTCHW[:, i]
+    #     last_masks_BNHW = first_frame_mask_BNHW
+    #     key_sum_BCHW = key_BCHW
+    #     for i in range(1, T):
+    #         this_key_BCHW = key_BTCHW[:, i]
 
-            # Softmax attention for the key
-            this_key_max_B1HW = torch.max(this_key_BCHW, dim=1, keepdim=True).values
-            this_key_BCHW = (this_key_BCHW - this_key_max_B1HW).softmax(dim=1)
+    #         # Softmax attention for the key
+    #         this_key_max_B1HW = torch.max(this_key_BCHW, dim=1, keepdim=True).values
+    #         this_key_BCHW = (this_key_BCHW - this_key_max_B1HW).softmax(dim=1)
 
-            this_readout_BNCHW = torch.einsum(
-                'bkhw,bnkv->bnvhw', this_key_BCHW, state_BNCC.clone()).contiguous()
+    #         this_readout_BNCHW = torch.einsum(
+    #             'bkhw,bnkv->bnvhw', this_key_BCHW, state_BNCC.clone()).contiguous()
 
-            normalizer_B = torch.einsum('bkhw,bkhw->b', this_key_BCHW, key_sum_BCHW)
-            this_readout_BNCHW = this_readout_BNCHW / normalizer_B.view(B, 1, 1, 1, 1)
-            key_sum_BCHW = key_sum_BCHW + this_key_BCHW
+    #         normalizer_B = torch.einsum('bkhw,bkhw->b', this_key_BCHW, key_sum_BCHW)
+    #         this_readout_BNCHW = this_readout_BNCHW / normalizer_B.view(B, 1, 1, 1, 1)
+    #         key_sum_BCHW = key_sum_BCHW + this_key_BCHW
 
-            # Segment
-            this_pixfeat_BCHW = pixfeat_BTCHW[:, i]
-            this_ms_feats = [feat_DCHW.view(B, T, *feat_DCHW.shape[1:])[:, i] \
-                             for feat_DCHW in ms_feats]
+    #         # Segment
+    #         this_pixfeat_BCHW = pixfeat_BTCHW[:, i]
+    #         this_ms_feats = [feat_DCHW.view(B, T, *feat_DCHW.shape[1:])[:, i] \
+    #                          for feat_DCHW in ms_feats]
             
-            this_logits_BNHW, this_masks_BNHW, sensory_BNCHW, aux = self.segment(
-                this_ms_feats, this_readout_BNCHW, this_pixfeat_BCHW, last_masks_BNHW, 
-                sensory_BNCHW, object_memory_sum_BNQC, update_sensory=True)
+    #         this_logits_BNHW, this_masks_BNHW, sensory_BNCHW, aux = self.segment(
+    #             this_ms_feats, this_readout_BNCHW, this_pixfeat_BCHW, last_masks_BNHW, 
+    #             sensory_BNCHW, object_memory_sum_BNQC, update_sensory=True)
 
-            # Auxilary task
-            this_aux_output = self.aux_computer(this_pixfeat_BCHW, sensory_BNCHW, aux)
+    #         # Auxilary task
+    #         this_aux_output = self.aux_computer(this_pixfeat_BCHW, sensory_BNCHW, aux)
 
-            # Update last masks
-            last_masks_BNHW = this_masks_BNHW[:, 1:] # remove the background
+    #         # Update last masks
+    #         last_masks_BNHW = this_masks_BNHW[:, 1:] # remove the background
 
-            # No need to encode the last frame
-            if i < T - 1:
-                this_image_BCHW = images_BTCHW[:, i]
-                this_value_BNCHW, sensory_BNCHW, object_memory_BNQC = self.encode_mask(
-                    this_image_BCHW, this_pixfeat_BCHW, this_masks_BNHW[:, 1:], 
-                    sensory_BNCHW, deep_update=True)
+    #         # No need to encode the last frame
+    #         if i < T - 1:
+    #             this_image_BCHW = images_BTCHW[:, i]
+    #             this_value_BNCHW, sensory_BNCHW, object_memory_BNQC = self.encode_mask(
+    #                 this_image_BCHW, this_pixfeat_BCHW, this_masks_BNHW[:, 1:], 
+    #                 sensory_BNCHW, deep_update=True)
 
-                # Update the state matrix with gated selection
-                this_state_BNCC = torch.einsum(
-                    'bkhw,bnvhw->bnkv', this_key_BCHW, this_value_BNCHW).contiguous()
+    #             # Update the state matrix with gated selection
+    #             this_state_BNCC = torch.einsum(
+    #                 'bkhw,bnvhw->bnkv', this_key_BCHW, this_value_BNCHW).contiguous()
                 
-                this_gate_BCC = torch.diag_embed(gate_BTC[:, i])
-                state_gated_BNCC = torch.einsum(
-                    'bnkv,bvv->bnkv', state_BNCC, this_gate_BCC)
-                state_BNCC = state_gated_BNCC + this_state_BNCC
+    #             this_gate_BCC = torch.diag_embed(gate_BTC[:, i])
+    #             state_gated_BNCC = torch.einsum(
+    #                 'bnkv,bvv->bnkv', state_BNCC, this_gate_BCC)
+    #             state_BNCC = state_gated_BNCC + this_state_BNCC
 
-                # Update the object memory sum
-                object_memory_sum_BNQC = object_memory_sum_BNQC + object_memory_BNQC
+    #             # Update the object memory sum
+    #             object_memory_sum_BNQC = object_memory_sum_BNQC + object_memory_BNQC
 
-            out[f'logits_{i}'] = this_logits_BNHW
-            out[f'masks_{i}'] = this_masks_BNHW[:, 1:] # remove the background
-            out[f'aux_{i}'] = this_aux_output
+    #         out[f'logits_{i}'] = this_logits_BNHW
+    #         out[f'masks_{i}'] = this_masks_BNHW[:, 1:] # remove the background
+    #         out[f'aux_{i}'] = this_aux_output
 
-        return out
+    #     return out
     
     def load_weights(self, src_dict, init_as_zero_if_needed=False) -> None:
         """
